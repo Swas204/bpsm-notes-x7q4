@@ -1,5 +1,7 @@
 /* ===========================================================
-   BPSM Study Guide : reading tools
+   Audit, Tax and Assurance Guide : reading tools
+   (same tools as the OB Study Guide, plus short-video links
+   and per-page progress on the home page)
    - hide / show the contents sidebar
    - "Mark as done" check after every section
    - All / Undone switch for a final pass over skipped parts
@@ -49,6 +51,235 @@
            'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
   };
 
+  /* ---------- highlighter ----------
+     Select text inside a section, pick a colour. Click a highlight to recolour or remove it.
+     Each highlight is saved as (section id, start, end) character offsets within that section's text,
+     counting only text outside buttons, so the Done / Show answer buttons changing their labels
+     never shifts a saved highlight. */
+  var HL_COLORS = ['yellow', 'green', 'pink', 'blue'];
+  var HL_ICON = svg('<path d="M9 11l-5 5v4h4l5-5"/><path d="M14.5 5.5l4 4L11 17l-4-4z"/><path d="M13 7l4 4"/>');
+
+  function initHighlighter(bar) {
+    var KEYH = 'hl:' + page;
+    var list;
+    try { list = JSON.parse(store.get(KEYH) || '[]'); } catch (e) { list = []; }
+    var lastColor = store.get('hlColor') || 'yellow';
+    function save() { store.set(KEYH, JSON.stringify(list)); paintCount(); renderPanel(); }
+
+    function rootOf(node) {
+      var el = node && (node.nodeType === 1 ? node : node.parentNode);
+      return el && el.closest ? el.closest('.topic') : null;
+    }
+    function skipped(t) { var p = t.parentNode; return !p || !!p.closest('button, .done-bar, .hl-pop, .hl-panel'); }
+    function textNodes(root) {
+      var out = [], w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n;
+      while ((n = w.nextNode())) if (!skipped(n)) out.push(n);
+      return out;
+    }
+    // character offset of a range boundary point within root's countable text
+    function offsetOf(root, node, off) {
+      var p = document.createRange();
+      p.setStart(node, off); p.collapse(true);
+      var total = 0, nodes = textNodes(root);
+      for (var i = 0; i < nodes.length; i++) {
+        var t = nodes[i];
+        if (t === node) return total + off;
+        if (p.comparePoint(t, t.length) <= 0) total += t.length; else break;
+      }
+      return total;
+    }
+    function apply(h) {
+      var root = document.querySelector('.topic[data-id="' + h.t + '"]');
+      if (!root) return;
+      var pos = 0;
+      textNodes(root).forEach(function (t) {
+        var len = t.length, a = pos, b = pos + len;
+        pos = b;
+        if (b <= h.s || a >= h.e) return;
+        var s = Math.max(h.s, a) - a, e = Math.min(h.e, b) - a;
+        if (e < len) t.splitText(e);
+        var mid = s > 0 ? t.splitText(s) : t;
+        if (!mid.textContent.trim()) return;
+        var m = document.createElement('mark');
+        m.className = 'hl hl-' + h.c;
+        m.setAttribute('data-hid', h.id);
+        mid.parentNode.insertBefore(m, mid);
+        m.appendChild(mid);
+      });
+    }
+    function marksOf(id) { return document.querySelectorAll('mark.hl[data-hid="' + id + '"]'); }
+    function unwrap(id) {
+      Array.prototype.forEach.call(marksOf(id), function (m) {
+        var parent = m.parentNode;
+        while (m.firstChild) parent.insertBefore(m.firstChild, m);
+        parent.removeChild(m);
+        parent.normalize();
+      });
+    }
+
+    // restore in the order they were made
+    list.forEach(apply);
+
+    /* popup */
+    var pop = document.createElement('div');
+    pop.className = 'hl-pop';
+    pop.hidden = true;
+    document.body.appendChild(pop);
+    pop.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    function place(rect) {
+      pop.hidden = false;
+      var top = rect.top + window.scrollY - pop.offsetHeight - 8;
+      if (top < window.scrollY + 60) top = rect.bottom + window.scrollY + 8;
+      var left = rect.left + window.scrollX + rect.width / 2 - pop.offsetWidth / 2;
+      left = Math.max(8, Math.min(left, document.documentElement.clientWidth - pop.offsetWidth - 8));
+      pop.style.top = top + 'px';
+      pop.style.left = left + 'px';
+    }
+    function hidePop() { pop.hidden = true; pop.innerHTML = ''; }
+    function swatches(current, onPick) {
+      HL_COLORS.forEach(function (c) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'sw sw-' + c + (c === current ? ' on' : '');
+        b.title = 'Highlight ' + c;
+        b.addEventListener('click', function () { lastColor = c; store.set('hlColor', c); onPick(c); });
+        pop.appendChild(b);
+      });
+    }
+
+    function newFromSelection() {
+      var sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+      var r = sel.getRangeAt(0);
+      var root = rootOf(r.startContainer);
+      if (!root || root !== rootOf(r.endContainer)) return false;
+      var text = r.toString().replace(/\s+/g, ' ').trim();
+      if (!text) return false;
+      var s = offsetOf(root, r.startContainer, r.startOffset);
+      var e = offsetOf(root, r.endContainer, r.endOffset);
+      if (e <= s) return false;
+      pop.innerHTML = '';
+      swatches(null, function (c) {
+        var h = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t: root.dataset.id, s: s, e: e, c: c, x: text.slice(0, 160) };
+        list.push(h);
+        apply(h);
+        save();
+        sel.removeAllRanges();
+        hidePop();
+      });
+      place(r.getBoundingClientRect());
+      return true;
+    }
+
+    function editMark(m) {
+      var id = m.getAttribute('data-hid');
+      var h = list.filter(function (x) { return x.id === id; })[0];
+      if (!h) return;
+      pop.innerHTML = '';
+      swatches(h.c, function (c) {
+        h.c = c;
+        Array.prototype.forEach.call(marksOf(id), function (el) { el.className = 'hl hl-' + c; });
+        save();
+        hidePop();
+      });
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'hl-del';
+      del.textContent = 'Remove';
+      del.addEventListener('click', function () {
+        unwrap(id);
+        list = list.filter(function (x) { return x.id !== id; });
+        save();
+        hidePop();
+      });
+      pop.appendChild(del);
+      place(m.getBoundingClientRect());
+    }
+
+    function onUp(e) {
+      if (pop.contains(e.target) || panel.contains(e.target)) return;
+      setTimeout(function () {
+        if (newFromSelection()) return;
+        var m = e.target.closest && e.target.closest('mark.hl');
+        if (m && window.getSelection().isCollapsed) { editMark(m); return; }
+        hidePop();
+      }, 0);
+    }
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('touchend', onUp);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hidePop(); panel.hidden = true; } });
+    window.addEventListener('resize', hidePop);
+
+    /* top-bar button + list of highlights on this page */
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sb-icon sb-hl';
+    btn.title = 'Highlights on this page';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = HL_ICON + '<span class="hl-count"></span>';
+    var themeBtn = bar.querySelector('#sbTheme');
+    bar.insertBefore(btn, themeBtn);
+
+    var panel = document.createElement('div');
+    panel.className = 'hl-panel';
+    panel.hidden = true;
+    document.body.appendChild(panel);
+    btn.addEventListener('click', function () { panel.hidden = !panel.hidden; if (!panel.hidden) renderPanel(); });
+
+    function paintCount() {
+      var c = btn.querySelector('.hl-count');
+      c.textContent = list.length ? String(list.length) : '';
+      btn.classList.toggle('on', list.length > 0);
+    }
+    function renderPanel() {
+      if (panel.hidden) return;
+      panel.innerHTML = '<div class="hl-head"><b>Highlights on this page</b><button type="button" class="hl-close" aria-label="Close">×</button></div>';
+      panel.querySelector('.hl-close').addEventListener('click', function () { panel.hidden = true; });
+      if (!list.length) {
+        panel.insertAdjacentHTML('beforeend', '<p class="hl-empty">Nothing yet. Select any text on the page and pick a colour.</p>');
+        return;
+      }
+      // in page order, not creation order
+      var order = Array.prototype.map.call(document.querySelectorAll('.topic'), function (t) { return t.dataset.id; });
+      var sorted = list.slice().sort(function (a, b) { return (order.indexOf(a.t) - order.indexOf(b.t)) || (a.s - b.s); });
+      sorted.forEach(function (h) {
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'hl-item';
+        var topic = document.querySelector('.topic[data-id="' + h.t + '"]');
+        var where = topic ? topic.dataset.name : '';
+        row.innerHTML = '<span class="dot hl-' + h.c + '"></span><span class="hl-txt"></span><span class="hl-where"></span>';
+        row.querySelector('.hl-txt').textContent = h.x;
+        row.querySelector('.hl-where').textContent = where;
+        row.addEventListener('click', function () {
+          var m = marksOf(h.id)[0];
+          if (!m) return;
+          if (topic && topic.hidden) { alert('This section is marked done and hidden. Switch the top bar to All to see it.'); return; }
+          var ans = m.closest('.answer');
+          if (ans && ans.hidden) { var ab = ans.previousElementSibling; if (ab && ab.classList.contains('ans-btn')) ab.click(); }
+          m.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          Array.prototype.forEach.call(marksOf(h.id), function (el) {
+            el.classList.add('hl-flash');
+            setTimeout(function () { el.classList.remove('hl-flash'); }, 1400);
+          });
+        });
+        panel.appendChild(row);
+      });
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'hl-clear';
+      clear.textContent = 'Clear all highlights on this page';
+      clear.addEventListener('click', function () {
+        if (!confirm('Remove all ' + list.length + ' highlights on this page?')) return;
+        list.forEach(function (h) { unwrap(h.id); });
+        list = [];
+        save();
+      });
+      panel.appendChild(clear);
+    }
+    paintCount();
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     var wrap = document.querySelector('main .wrap');
     if (!wrap) return;
@@ -59,6 +290,27 @@
     // "Unit 2A · Individual Behaviour & Personality", built from the current sidebar entry
     var cur = document.querySelector('.side-unit.current');
     var label = 'Business Policy & Strategic Management · Start here';
+
+    /* ---------- short-video links ---------- */
+    // <a class="vid" data-q="..."> becomes a YouTube search filtered to videos under 4 minutes,
+    // so whatever comes up stays at the basic level.
+    Array.prototype.forEach.call(document.querySelectorAll('a.vid[data-q]'), function (a) {
+      a.href = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(a.getAttribute('data-q')) +
+        '&sp=EgIYAQ%253D%253D';
+      a.target = '_blank';
+      a.rel = 'noopener';
+      if (!a.textContent.trim()) a.textContent = 'Watch a short video (under 4 min)';
+    });
+
+    /* ---------- home page: progress on each chapter card ---------- */
+    Array.prototype.forEach.call(document.querySelectorAll('.unit-card[data-page]'), function (c) {
+      var p = c.getAttribute('data-page');
+      var tot = store.get('total:' + p), dn = store.get('done:' + p);
+      var el = document.createElement('span');
+      el.className = 'uc-prog';
+      el.textContent = tot ? (dn || 0) + ' of ' + tot + ' sections done' : 'Not started';
+      c.appendChild(el);
+    });
     if (document.body.getAttribute('data-title')) {
       label = document.body.getAttribute('data-title');
     } else if (cur && isUnit) {
@@ -237,6 +489,8 @@
     function paintProgress() {
       var n = topics.filter(function (t) { return isDone(t.dataset.id); }).length;
       prog.textContent = n + ' of ' + topics.length + ' done';
+      store.set('total:' + page, String(topics.length));
+      store.set('done:' + page, String(n));
       meter.style.width = (topics.length ? (100 * n / topics.length) : 0) + '%';
     }
 
@@ -274,6 +528,8 @@
     if (store.get('filter') === '1') document.body.classList.add('undone-only');
     paintProgress();
     applyFilter();
+
+    initHighlighter(bar);
 
     // the done bars shift content down, so re-land on a #section link
     if (location.hash) {
