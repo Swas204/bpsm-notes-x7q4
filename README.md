@@ -2,7 +2,7 @@
 
 A study site for the BPSM mid-semester exam (Units 1 and 2), built from the class notes first and the prescribed textbooks second.
 
-**Live site:** https://swas204.github.io/BPSM-study-guide/
+**Live site:** https://swas204.github.io/bpsm-study-guide/
 
 ## Pages
 
